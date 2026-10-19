@@ -241,4 +241,6 @@
     <string name="label_yes">是</string>
     <string name="msg_error_clearing_cache">未能清除缓存</string>
     <string name="msg_select_service_to_move">选择需迁移的服务</string>
+    <string name="action_favorite">收藏</string>
+    <string name="action_unfavorite">取消收藏</string>
 </resources>
