@@ -38,7 +38,15 @@ jobs:
           accept-android-sdk-licenses: false
 
       - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
+        shell: bash
+        run: |
+          set +e
+          yes | sdkmanager --licenses
+          sdkmanager_status=${PIPESTATUS[1]}
+          if [ "$sdkmanager_status" -ne 0 ]; then
+            echo "sdkmanager --licenses failed with exit code $sdkmanager_status"
+            exit "$sdkmanager_status"
+          fi
 
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools"
