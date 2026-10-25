@@ -178,6 +178,68 @@ fun AiHubApp(
     }
     var lastDisplayedServiceName by remember { mutableStateOf<String?>(null) }
 
+    // Single owner for WebView creation and callback registration. This prevents the
+    // initial-load effect and AndroidView lifecycle from creating competing instances.
+    fun createAndRegisterWebView(service: AiService, parent: ViewGroup? = null): WebView {
+        webViews[service.name]?.let { existing ->
+            if (parent != null && existing.parent == null) parent.addView(existing)
+            return existing
+        }
+
+        val serviceName = service.name
+        val webView = createWebViewForService(
+            context = parent?.context ?: context,
+            service = service,
+            activity = context,
+            settings = settings,
+            onProgressUpdate = { progress -> reportProgress(serviceName, progress) },
+            onLoadingStateChange = { isLoading ->
+                updateServiceState(serviceName) { state ->
+                    state.copy(
+                        isLoading = isLoading,
+                        webViewState = if (isLoading) WebViewState.LOADING else WebViewState.SUCCESS,
+                        progress = if (isLoading) 0 else state.progress,
+                        error = if (isLoading) null else state.error
+                    )
+                }
+            },
+            onLinkLongPress = { url, title, type ->
+                selectedLink = LinkData(url, title, type)
+                showLinkDialog = true
+            },
+            onError = { errorCode, description ->
+                updateServiceState(serviceName) { state ->
+                    state.copy(
+                        error = errorCode to description,
+                        webViewState = WebViewState.ERROR,
+                        isLoading = false
+                    )
+                }
+                webViews[serviceName]?.visibility = View.GONE
+            },
+            onJsAlertRequest = { message, result ->
+                message?.let { jsDialog = JsDialog.Alert(it, result!!) }
+            },
+            onJsConfirmRequest = { message, result ->
+                message?.let { jsDialog = JsDialog.Confirm(it, result!!) }
+            },
+            onJsPromptRequest = { message, result ->
+                message?.let { jsDialog = JsDialog.Prompt(it, result!!) }
+            },
+            onJsBeforeUnloadRequest = { message, result ->
+                message?.let { jsDialog = JsDialog.BeforeUnload(it, result!!) }
+            },
+        )
+
+        updateWebViewSettings(webView, settings, false)
+        webViews[serviceName] = webView
+        serviceAccessOrder.remove(serviceName)
+        serviceAccessOrder.add(0, serviceName)
+        loadedServices.add(serviceName)
+        if (parent != null && webView.parent == null) parent.addView(webView)
+        return webView
+    }
+
     fun reloadAllActiveTabs() {
         webViews.forEach { (serviceId, webView) ->
             webView.reload()
@@ -244,63 +306,7 @@ fun AiHubApp(
         initialServiceNames.forEach { serviceName ->
             val service = aiServices.find { it.name == serviceName } ?: return@forEach
             if (!webViews.containsKey(serviceName)) {
-                val webView = createWebViewForService(
-                    context = context,
-                    service = service,
-                    activity = context,
-                    settings = settings,
-                    onProgressUpdate = { progress ->
-                        reportProgress(serviceName, progress)
-                    },
-                    onLoadingStateChange = { isLoading ->
-                        updateServiceState(serviceName) {
-                            it.copy(
-                                isLoading = isLoading,
-                                webViewState = if (isLoading) WebViewState.LOADING else WebViewState.SUCCESS
-                            )
-                        }
-                        if (isLoading) {
-                            updateServiceState(serviceName) { it.copy(error = null) }
-                        }
-                    },
-                    onLinkLongPress = { url, title, type ->
-                        selectedLink = LinkData(url, title, type)
-                        showLinkDialog = true
-                    },
-                    onError = { errorCode, description ->
-                        updateServiceState(serviceName) {
-                            it.copy(
-                                error = errorCode to description,
-                                webViewState = WebViewState.ERROR,
-                                isLoading = false
-                            )
-                        }
-                    },
-                    onJsAlertRequest = { message, result ->
-                        message?.let {
-                            jsDialog = JsDialog.Alert(it, result!!)
-                        }
-                    },
-                    onJsConfirmRequest = { message, result ->
-                        message?.let {
-                            jsDialog = JsDialog.Confirm(it, result!!)
-                        }
-                    },
-                    onJsPromptRequest = { message, result ->
-                        message?.let {
-                            jsDialog = JsDialog.Prompt(it, result!!)
-                        }
-                    },
-                    onJsBeforeUnloadRequest = { message, result ->
-                        message?.let {
-                            jsDialog = JsDialog.BeforeUnload(it, result!!)
-                        }
-                    },
-                )
-                updateWebViewSettings(webView, settings, false)
-                webViews[serviceName] = webView
-                serviceAccessOrder.add(0, serviceName)
-                loadedServices.add(serviceName)
+                createAndRegisterWebView(service)
             }
         }
     }
@@ -592,99 +598,24 @@ fun AiHubApp(
                     AndroidView(
                         factory = { ctx ->
                             FrameLayout(ctx).apply {
-                                webViews.values.forEach { wv ->
-                                    if (wv.parent == null) {
-                                        addView(wv)
-                                        wv.visibility = View.GONE
-                                    }
+                                webViews.values.forEach { webView ->
+                                    if (webView.parent == null) addView(webView)
+                                    if (webView.visibility != View.GONE) webView.visibility = View.GONE
                                 }
 
-                                val currentService = selectedService
-                                val currentWebView = webViews[currentService.name]
-                                if (currentWebView == null) {
-                                    val newWebView = createWebViewForService(
-                                        context = this.context,
-                                        service = currentService,
-                                        activity = context,
-                                        settings = settings,
-                                        onProgressUpdate = { progress ->
-                                            reportProgress(currentService.name, progress)
-                                        },
-                                        onLoadingStateChange = { isLoading ->
-                                            updateServiceState(currentService.name) { state ->
-                                                state.copy(
-                                                    isLoading = isLoading,
-                                                    webViewState = if (isLoading) WebViewState.LOADING else WebViewState.SUCCESS,
-                                                    progress = if (isLoading) 0 else state.progress
-                                                )
-                                            }
-
-                                            if (isLoading) {
-                                                updateServiceState(currentService.name) { state ->
-                                                    state.copy(error = null)
-                                                }
-                                            }
-                                        },
-                                        onLinkLongPress = { url, title, type ->
-                                            selectedLink = LinkData(url, title, type)
-                                            showLinkDialog = true
-                                        },
-                                        onError = { errorCode, description ->
-                                            updateServiceState(currentService.name) { state ->
-                                                state.copy(
-                                                    error = errorCode to description,
-                                                    webViewState = WebViewState.ERROR,
-                                                    isLoading = false
-                                                )
-                                            }
-                                            webViews[currentService.name]?.visibility = View.GONE
-                                        },
-                                        onJsAlertRequest = { message, result ->
-                                            message?.let {
-                                                jsDialog = JsDialog.Alert(it, result!!)
-                                            }
-                                        },
-                                        onJsConfirmRequest = { message, result ->
-                                            message?.let {
-                                                jsDialog = JsDialog.Confirm(it, result!!)
-                                            }
-                                        },
-                                        onJsPromptRequest = { message, result ->
-                                            message?.let {
-                                                jsDialog = JsDialog.Prompt(it, result!!)
-                                            }
-                                        },
-                                        onJsBeforeUnloadRequest = { message, result ->
-                                            message?.let {
-                                                jsDialog = JsDialog.BeforeUnload(it, result!!)
-                                            }
-                                        },
-                                    )
-
-                                    updateWebViewSettings(newWebView, settings, false)
-                                    webViews[currentService.name] = newWebView
-                                    addView(newWebView)
-                                    newWebView.visibility = View.VISIBLE
-                                    newWebView.bringToFront()
-                                } else {
-                                    if (currentWebView.parent == null) {
-                                        addView(currentWebView)
-                                    }
-                                    currentWebView.bringToFront()
-
-                                    val shouldBeVisible =
-                                        serviceStates[currentService.name]?.error == null
-                                    currentWebView.visibility =
-                                        if (shouldBeVisible) View.VISIBLE else View.GONE
-                                }
+                                val currentWebView = webViews[selectedService.name]
+                                    ?: createAndRegisterWebView(selectedService, this)
+                                if (currentWebView.parent == null) addView(currentWebView)
+                                currentWebView.visibility =
+                                    if (serviceStates[selectedService.name]?.error == null) View.VISIBLE else View.GONE
+                                currentWebView.bringToFront()
+                                lastDisplayedServiceName = selectedService.name
                             }
                         },
                         update = { root ->
                             val currentService = selectedService
                             val serviceChanged = lastDisplayedServiceName != currentService.name
 
-                            // Keep background WebViews attached for session retention, but never
-                            // leave them visible/compositing underneath the selected tab.
                             webViews.forEach { (serviceId, webView) ->
                                 if (serviceId != currentService.name && webView.visibility != View.GONE) {
                                     webView.visibility = View.GONE
@@ -694,88 +625,22 @@ fun AiHubApp(
                                 }
                             }
 
-                            if (webViews[currentService.name] == null) {
-                                val newWebView = createWebViewForService(
-                                    context = root.context,
-                                    service = currentService,
-                                    activity = context,
-                                    settings = settings,
-                                    onProgressUpdate = { progress ->
-                                        reportProgress(currentService.name, progress)
-                                    },
-                                    onLoadingStateChange = { isLoading ->
-                                        updateServiceState(currentService.name) { state ->
-                                            state.copy(
-                                                isLoading = isLoading,
-                                                webViewState = if (isLoading) WebViewState.LOADING else WebViewState.SUCCESS
-                                            )
-                                        }
+                            val currentWebView = webViews[currentService.name]
+                                ?: createAndRegisterWebView(currentService, root)
+                            val wasDetached = currentWebView.parent == null
+                            if (wasDetached) root.addView(currentWebView)
 
-                                        if (isLoading) {
-                                            updateServiceState(currentService.name) { state ->
-                                                state.copy(error = null)
-                                            }
-                                        }
-                                    },
-                                    onLinkLongPress = { url, title, type ->
-                                        selectedLink = LinkData(url, title, type)
-                                        showLinkDialog = true
-                                    },
-                                    onError = { errorCode, description ->
-                                        updateServiceState(currentService.name) { state ->
-                                            state.copy(
-                                                error = errorCode to description,
-                                                webViewState = WebViewState.ERROR,
-                                                isLoading = false
-                                            )
-                                        }
-                                        webViews[currentService.name]?.visibility = View.GONE
-                                    },
-                                    onJsAlertRequest = { message, result ->
-                                        message?.let {
-                                            jsDialog = JsDialog.Alert(it, result!!)
-                                        }
-                                    },
-                                    onJsConfirmRequest = { message, result ->
-                                        message?.let {
-                                            jsDialog = JsDialog.Confirm(it, result!!)
-                                        }
-                                    },
-                                    onJsPromptRequest = { message, result ->
-                                        message?.let {
-                                            jsDialog = JsDialog.Prompt(it, result!!)
-                                        }
-                                    },
-                                    onJsBeforeUnloadRequest = { message, result ->
-                                        message?.let {
-                                            jsDialog = JsDialog.BeforeUnload(it, result!!)
-                                        }
-                                    },
-                                )
-
-                                updateWebViewSettings(newWebView, settings, false)
-                                webViews[currentService.name] = newWebView
-                                root.addView(newWebView)
-                                newWebView.visibility =
-                                    if (serviceStates[currentService.name]?.error == null) View.VISIBLE else View.GONE
-                                if (serviceChanged) newWebView.bringToFront()
-                                lastDisplayedServiceName = currentService.name
-                            } else {
-                                val currentWebView = webViews[currentService.name]!!
-                                val wasDetached = currentWebView.parent == null
-                                if (wasDetached) root.addView(currentWebView)
-
-                                val shouldBeVisible = serviceStates[currentService.name]?.error == null
-                                val desiredVisibility = if (shouldBeVisible) View.VISIBLE else View.GONE
-                                if (currentWebView.visibility != desiredVisibility) {
-                                    currentWebView.visibility = desiredVisibility
-                                }
-                                if (serviceChanged || wasDetached) {
-                                    currentWebView.onResume()
-                                    currentWebView.bringToFront()
-                                }
-                                lastDisplayedServiceName = currentService.name
+                            val shouldBeVisible = serviceStates[currentService.name]?.error == null
+                            val desiredVisibility = if (shouldBeVisible) View.VISIBLE else View.GONE
+                            if (currentWebView.visibility != desiredVisibility) {
+                                currentWebView.visibility = desiredVisibility
                             }
+
+                            if (serviceChanged || wasDetached) {
+                                currentWebView.onResume()
+                                currentWebView.bringToFront()
+                            }
+                            lastDisplayedServiceName = currentService.name
                         },
                         modifier = Modifier.fillMaxSize(),
                     )
