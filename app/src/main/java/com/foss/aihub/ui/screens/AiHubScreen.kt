@@ -159,6 +159,25 @@ fun AiHubApp(
         serviceStates[serviceId] = newState
     }
 
+    // WebView progress can fire for nearly every percentage point. Only publish
+    // meaningful changes for the selected tab; background tabs update when selected.
+    val lastReportedProgress = remember { mutableMapOf<String, Int>() }
+    fun reportProgress(serviceId: String, progress: Int) {
+        if (serviceId != selectedService.name) return
+        val previous = lastReportedProgress[serviceId] ?: -5
+        if (progress == 0 || progress == 100 || progress < previous || progress - previous >= 5) {
+            lastReportedProgress[serviceId] = progress
+            updateServiceState(serviceId) { state ->
+                if (state.progress == progress) state else state.copy(progress = progress)
+            }
+        }
+    }
+
+    val drawerWebViewStates by remember {
+        derivedStateOf { serviceStates.mapValues { it.value.webViewState } }
+    }
+    var lastDisplayedServiceName by remember { mutableStateOf<String?>(null) }
+
     fun reloadAllActiveTabs() {
         webViews.forEach { (serviceId, webView) ->
             webView.reload()
@@ -231,7 +250,7 @@ fun AiHubApp(
                     activity = context,
                     settings = settings,
                     onProgressUpdate = { progress ->
-                        updateServiceState(serviceName) { it.copy(progress = progress) }
+                        reportProgress(serviceName, progress)
                     },
                     onLoadingStateChange = { isLoading ->
                         updateServiceState(serviceName) {
@@ -384,7 +403,6 @@ fun AiHubApp(
                     }, progress = wv.progress
                 )
             }
-            wv.bringToFront()
         } else {
             updateServiceState(selectedService.name) { state ->
                 state.copy(
@@ -424,7 +442,7 @@ fun AiHubApp(
                         )
                     }
                 },
-                webViewStates = serviceStates.mapValues { it.value.webViewState },
+                webViewStates = drawerWebViewStates,
                 enabledServices = settings.enabledServices,
                 serviceOrder = settings.serviceOrder,
                 favoriteServices = settings.favoriteServices,
@@ -515,7 +533,7 @@ fun AiHubApp(
                             ).show()
                         }
                     },
-                    loadedServiceNames = webViews.keys,
+                    loadedServiceNames = remember(webViews.keys.toSet()) { webViews.keys.toSet() },
                     allServices = aiServices,
                     onReload = { service ->
                         webViews[service.name]?.reload()
@@ -590,9 +608,7 @@ fun AiHubApp(
                                         activity = context,
                                         settings = settings,
                                         onProgressUpdate = { progress ->
-                                            updateServiceState(currentService.name) { state ->
-                                                state.copy(progress = progress)
-                                            }
+                                            reportProgress(currentService.name, progress)
                                         },
                                         onLoadingStateChange = { isLoading ->
                                             updateServiceState(currentService.name) { state ->
@@ -665,6 +681,19 @@ fun AiHubApp(
                         },
                         update = { root ->
                             val currentService = selectedService
+                            val serviceChanged = lastDisplayedServiceName != currentService.name
+
+                            // Keep background WebViews attached for session retention, but never
+                            // leave them visible/compositing underneath the selected tab.
+                            webViews.forEach { (serviceId, webView) ->
+                                if (serviceId != currentService.name && webView.visibility != View.GONE) {
+                                    webView.visibility = View.GONE
+                                }
+                                if (serviceChanged && serviceId == lastDisplayedServiceName) {
+                                    webView.onPause()
+                                }
+                            }
+
                             if (webViews[currentService.name] == null) {
                                 val newWebView = createWebViewForService(
                                     context = root.context,
@@ -729,19 +758,25 @@ fun AiHubApp(
                                 updateWebViewSettings(newWebView, settings, false)
                                 webViews[currentService.name] = newWebView
                                 root.addView(newWebView)
-                                newWebView.visibility = View.VISIBLE
-                                newWebView.bringToFront()
+                                newWebView.visibility =
+                                    if (serviceStates[currentService.name]?.error == null) View.VISIBLE else View.GONE
+                                if (serviceChanged) newWebView.bringToFront()
+                                lastDisplayedServiceName = currentService.name
                             } else {
                                 val currentWebView = webViews[currentService.name]!!
-                                if (currentWebView.parent == null) {
-                                    root.addView(currentWebView)
-                                }
+                                val wasDetached = currentWebView.parent == null
+                                if (wasDetached) root.addView(currentWebView)
 
-                                val shouldBeVisible =
-                                    serviceStates[currentService.name]?.error == null
-                                currentWebView.visibility =
-                                    if (shouldBeVisible) View.VISIBLE else View.GONE
-                                currentWebView.bringToFront()
+                                val shouldBeVisible = serviceStates[currentService.name]?.error == null
+                                val desiredVisibility = if (shouldBeVisible) View.VISIBLE else View.GONE
+                                if (currentWebView.visibility != desiredVisibility) {
+                                    currentWebView.visibility = desiredVisibility
+                                }
+                                if (serviceChanged || wasDetached) {
+                                    currentWebView.onResume()
+                                    currentWebView.bringToFront()
+                                }
+                                lastDisplayedServiceName = currentService.name
                             }
                         },
                         modifier = Modifier.fillMaxSize(),
