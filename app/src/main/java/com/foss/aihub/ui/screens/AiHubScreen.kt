@@ -701,9 +701,7 @@ fun AiHubApp(
                                     activity = context,
                                     settings = settings,
                                     onProgressUpdate = { progress ->
-                                        updateServiceState(currentService.name) { state ->
-                                            state.copy(progress = progress)
-                                        }
+                                        reportProgress(currentService.name, progress)
                                     },
                                     onLoadingStateChange = { isLoading ->
                                         updateServiceState(currentService.name) { state ->
